@@ -36,6 +36,270 @@ starts new workers, which take over from old workers before those old workers
 are terminated. In this way, Kong will serve new requests via the new
 configuration, without dropping existing in-flight connections.
 
+## Upgrade to `0.14.x`
+
+This version introduces **changes in Admin API endpoints**, **database
+migrations**, **Nginx configuration changes**, and **removed configuration
+properties**.
+
+In this release, the **API entity is still supported**, along with its related
+Admin API endpoints.
+
+This section will highlight breaking changes that you need to be aware of
+before upgrading, and will describe the recommended upgrade path. We recommend
+that you consult the full [0.14.0
+Changelog](https://github.com/Kong/kong/blob/master/CHANGELOG.md) for a
+complete list of changes and new features.
+
+#### 1. Breaking Changes
+
+##### Dependencies
+
+- The required OpenResty version has been bumped to 1.13.6.2. If you
+  are installing Kong from one of our distribution packages, you are not
+  affected by this change.
+- Support for PostreSQL 9.4 (deprecated in 0.12.0) is now dropped.
+- Support for Cassandra 2.1 (deprecated in 0.12.0) is now dropped.
+
+##### Configuration
+
+- The `server_tokens` and `latency_tokens` configuration properties have been
+  removed. Instead, a new `headers` configuration properties replaces them.
+  See the default configuration file or the [configuration
+  reference](https://docs.konghq.com/0.14.x/configuration/) for more details.
+- The Nginx configuration file has changed, which means that you need to update
+  it if you are using a custom template. The changes are detailed in a diff
+  included below.
+
+<details>
+<summary><strong>Click here to see the Nginx configuration changes</strong></summary>
+<p>
+
+```diff> {{{
+diff --git a/kong.conf.default b/kong.conf.default
+index 96ba0f16..e93d398c 100644
+--- a/kong.conf.default
++++ b/kong.conf.default
+@@ -59,12 +59,36 @@
+                                           # adjusted by the `log_level`
+                                           # directive.
+
+-#custom_plugins =                # Comma-separated list of additional plugins
+-                                 # this node should load.
+-                                 # Use this property to load custom plugins
+-                                 # that are not bundled with Kong.
+-                                 # Plugins will be loaded from the
+-                                 # `kong.plugins.{name}.*` namespace.
++#plugins = bundled               # Comma-separated list of plugins this node
++                                 # should load. By default, only plugins
++                                 # bundled in official distributions are
++                                 # loaded via the `bundled` keyword.
++                                 #
++                                 # Loading a plugin does not enable it by
++                                 # default, but only instructs Kong to load its
++                                 # source code, and allows to configure the
++                                 # plugin via the various related Admin API
++                                 # endpoints.
++                                 #
++                                 # The specified name(s) will be substituted as
++                                 # such in the Lua namespace:
++                                 # `kong.plugins.{name}.*`.
++                                 #
++                                 # When the `off` keyword is specified as the
++                                 # only value, no plugins will be loaded.
++                                 #
++                                 # `bundled` and plugin names can be mixed
++                                 # together, as the following examples suggest:
++                                 #
++                                 # - plugins = bundled, custom-auth
++                                 #     > will load all bundled plugins and
++                                 #       another plugin `custom-auth`
++                                 #
++                                 # - plugins = key-auth, custom-auth
++                                 #     > will only load these two plugins
++                                 #
++                                 # - plugins = off
++                                 #     > will not load any plugin
+
+ #anonymous_reports = on          # Send anonymous usage data such as error
+                                  # stack traces to help improve Kong.
+@@ -190,15 +214,25 @@
+                                  # process. When this number is exceeded, the
+                                  # least recently used connections are closed.
+
+-#server_tokens = on              # Enables or disables emitting Kong version on
+-                                 # error pages and in the "Server" or "Via"
+-                                 # (in case the request was proxied) response
+-                                 # header field.
+-
+-#latency_tokens = on             # Enables or disables emitting Kong latency
+-                                 # information in the "X-Kong-Proxy-Latency"
+-                                 # and "X-Kong-Upstream-Latency" response
+-                                 # header fields.
++#headers = server_tokens, latency_tokens
++                                 # Specify Kong-specific headers that should
++                                 # be injected in responses to the client.
++                                 # Acceptable values are:
++                                 # - `server_tokens`: inject 'Via' and 'Server'
++                                 #   headers.
++                                 # - `latency_tokens`: inject
++                                 #   'X-Kong-Proxy-Latency' and
++                                 #   'X-Kong-Upstream-Latency' headers.
++                                 # - `X-Kong-<header-name>`: only inject this
++                                 #   specific the header when applicable.
++                                 #
++                                 # Example:
++                                 #   headers = via, latency_tokens
++                                 #
++                                 # This value can be set to `off`, which
++                                 # prevents Kong from injecting any of these
++                                 # headers. Note that plugins can still inject
++                                 # headers.
+
+ #trusted_ips =                   # Defines trusted IP addresses blocks that are
+                                  # known to send correct X-Forwarded-* headers.
+@@ -339,12 +373,15 @@
+ #cassandra_lb_policy = RoundRobin  # Load balancing policy to use when
+                                    # distributing queries across your Cassandra
+                                    # cluster.
+-                                   # Accepted values are `RoundRobin` and
+-                                   # `DCAwareRoundRobin`.
++                                   # Accepted values are:
++                                   # `RoundRobin`, `RequestRoundRobin`,
++                                   # `DCAwareRoundRobin`, and
++                                   # `RequestDCAwareRoundRobin`.
+                                    # Prefer the later if and only if you are
+                                    # using a multi-datacenter cluster.
+
+-#cassandra_local_datacenter =    # When using the `DCAwareRoundRobin` load
++#cassandra_local_datacenter =    # When using the `DCAwareRoundRobin`
++                                 # or `RequestDCAwareRoundRobin` load
+                                  # balancing policy, you must specify the name
+                                  # of the local (closest) datacenter for this
+                                  # Kong node.
+@@ -408,12 +445,12 @@
+                                  # servers should suffer no such delays, and
+                                  # this value can be safely set to 0.
+
+-#db_cache_ttl = 3600             # Time-to-live (in seconds) of an entity from
++#db_cache_ttl = 0                # Time-to-live (in seconds) of an entity from
+                                  # the datastore when cached by this node.
+                                  # Database misses (no entity) are also cached
+                                  # according to this setting.
+-                                 # If set to 0, such cached entities/misses
+-                                 # never expire.
++                                 # If set to 0 (default), such cached entities
++                                 # or misses never expire.
+
+ #------------------------------------------------------------------------------
+ # DNS RESOLVER
+@@ -485,10 +522,10 @@
+                                  # This includes the certificates configured
+                                  # for Kong's database connections.
+
+-#lua_package_path =              # Sets the Lua module search path (LUA_PATH).
+-                                 # Useful when developing or using custom
+-                                 # plugins not stored in the default search
+-                                 # path.
++#lua_package_path = ./?.lua;./?/init.lua;  # Sets the Lua module search path
++                                           # (LUA_PATH). Useful when developing
++                                           # or using custom plugins not stored
++                                           # in the default search path.
+
+ #lua_package_cpath =             # Sets the Lua C module search path
+                                  # (LUA_CPATH).
+```> }}}
+
+</p>
+</details>
+
+##### Core
+
+- If you are relying on passive health-checks to detect TCP timeouts, you
+  should double-check your health-check configurations. Previously, timeouts
+  were erroneously contriburing to the `tcp_failures` counter. They are now
+  properly contributing to the `timeout` counter. In order to short-circuit
+  traffic based on timeouts, you must ensure that your `timeout` settings
+  are properly configured. See the [Health Checks
+  reference](https://docs.konghq.com/0.14.x/health-checks-circuit-breakers/)
+  for more details.
+
+##### Plugins
+
+- Custom plugins can now see their `header_filter`, `body_filter`, and `log`
+  phases executed without the `rewrite` or `access` phases running first.  This
+  can happen when Nginx itself produces an error while parsing the client's
+  request. Similarly, `ngx.var` values (e.g. `ngx.var.request_uri`) may be
+  `nil`. Plugins should be hardened to handle such cases and avoid using
+  unititialized variables, which could throw Lua errors.
+- The Runscope plugin has been dropped, based on the EoL announcement made by
+  Runscope about their Traffic Inspector product.
+
+##### Admin API
+
+- As a result of being moved to the new Admin API implementation (and
+  supporting `PUT` and named endpoints), the `/snis` endpoint
+  `ssl_certificate_id` attribute has been renamed to `certificate_id`.
+  See the [Admin API
+  reference](https://docs.konghq.com/0.14.x/admin-api/#add-sni) for
+  more details.
+- On the `/certificates` endpoint, the `snis` attribute is not specified as a
+  comma-separated list anymore. It must be specified as a JSON array, or using
+  the url-formencoded array notation of other recent Admin API endpoints. See
+  the [Admin API
+  reference](https://docs.konghq.com/0.14.x/admin-api/#add-certificate) for
+  more details.
+- Filtering by username in the `/consumers` endpoint is not supported with
+  `/consumers?username=...`. Instead, use `/consumers/{username}` to retrieve a
+  Consumer by its username. Filtering with `/consumers?custom_id=...` is still
+  supported.
+
+#### 2. Deprecation Notices
+
+- The `custom_plugins` configuration property is now deprecated in favor of
+  `plugins`. See the default configuration file or the [configuration
+  reference](https://docs.konghq.com/0.14.x/configuration/) for more details.
+
+#### 3. Suggested Upgrade Path
+
+You can now start migrating your cluster from `0.13.x` to `0.14`. If you are
+doing this upgrade "in-place", against the datastore of a running 0.13 cluster,
+then for a short period of time, your database schema won't be fully compatible
+with your 0.13 nodes anymore. This is why we suggest either performing this
+upgrade when your 0.13 cluster is warm and most entities are cached, or against
+a new database, if you can migrate your data. If you wish to temporarily make
+your APIs unavailable, you can leverage the
+[request-termination](https://getkong.org/plugins/request-termination/) plugin.
+
+The path to upgrade a 0.13 datastore is identical to the one of previous major
+releases:
+
+1. If you are planning on upgrading Kong while 0.13 nodes are running against
+   the same datastore, make sure those nodes are warm enough (they should have
+   most of your entities cached already), or temporarily disable your APIs.
+2. Provision a 0.14 node and configure it as you wish (environment variables/
+   configuration file). Make sure to point this new 0.14 node to your current
+   datastore.
+3. **Without starting the 0.14 node**, run the 0.14 migrations against your
+   current datastore:
+
+```
+$ kong migrations up [-c kong.conf]
+```
+
+As usual, this step should be executed from a **single node**.
+
+4. You can now provision a fresh 0.14 cluster pointing to your migrated
+   datastore and start your 0.14 nodes.
+5. Gradually switch your traffic from the 0.13 cluster to the new 0.14 cluster.
+   Remember, once your database is migrated, your 0.13 nodes will rely on
+   their cache and not on the underlying database. Your traffic should switch
+   to the new cluster as quickly as possible.
+6. Once your traffic is fully migrated to the 0.14 cluster, decommission
+   your 0.13 cluster.
+
+You have now successfully upgraded your cluster to run 0.14 nodes exclusively.
+
 ## Upgrade to `0.13.x`
 
 This version comes with **new model entities**, **database migrations**, and
